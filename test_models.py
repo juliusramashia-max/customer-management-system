@@ -1,114 +1,97 @@
+import pytest
 from app import app
 from database import db
 from models import User, Customer, Product, Invoice, LineItem, Payment
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Decimal
 
-def test_create_user():
-    """Test creating a user."""
+
+@pytest.fixture
+def test_app():
+    """Set up the app and an in-memory database for each test."""
+    # Use an in-memory database (starts empty every time)
+    app.config['TESTING'] = True
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
+
     with app.app_context():
-        # Create user
+        db.create_all()      # ← THIS IS THE CRITICAL LINE
+        yield app
+        db.session.remove()
+        db.drop_all()
+
+
+def test_create_user(test_app):
+    """Test creating a user."""
+    with test_app.app_context():
         user = User(
             email='test@example.com',
             password_hash='hashed_password_here'
         )
         db.session.add(user)
         db.session.commit()
-        
-        print(f"✅ User created with ID: {user.id}")
-        
-        # Create customer
+
+        assert user.id is not None
+        assert user.email == 'test@example.com'
+        assert user.created_at is not None
+
+
+def test_create_invoice(test_app):
+    """Test creating an invoice with line items."""
+    with test_app.app_context():
+        # Create prerequisite data
+        user = User(email='test@example.com', password_hash='hash')
+        db.session.add(user)
+        db.session.commit()
+
         customer = Customer(
             user_id=user.id,
             name='John Doe',
-            email='john@example.com',
-            phone='+1234567890',
-            company='ACME Corp'
+            email='john@example.com'
         )
         db.session.add(customer)
         db.session.commit()
-        
-        print(f"✅ Customer created with ID: {customer.id}")
-        
-        # Create product
+
         product = Product(
             user_id=user.id,
             name='Web Development',
-            description='Custom website development',
-            unit_price=1000,
-            tax_rate=15
+            unit_price=Decimal('1000.00'),
+            tax_rate=Decimal('15.00')
         )
         db.session.add(product)
         db.session.commit()
-        
-        print(f"✅ Product created with ID: {product.id}")
-        
-        return user, customer, product
 
-def test_create_invoice():
-    """Test creating an invoice with line items."""
-    with app.app_context():
-        # Get existing data
-        user = User.query.first()
-        customer = Customer.query.first()
-        product = Product.query.first()
-        
-        if not all([user, customer, product]):
-            print("❌ Need existing user, customer, and product")
-            return
-        
-        # Create invoice
+        # Now create an invoice
         invoice = Invoice(
             user_id=user.id,
             customer_id=customer.id,
             invoice_number='INV-2026-0001',
-            issue_date=datetime.utcnow(),
             due_date=datetime.utcnow() + timedelta(days=30),
-            subtotal=0,
-            discount=0,
-            tax_amount=0,
-            total=0,
             status='DRAFT'
         )
         db.session.add(invoice)
-        db.session.flush()  # Get ID without committing
-        
-        # Create line item
+        db.session.flush()
+
         quantity = 2
-        unit_price = product.unit_price
-        subtotal = quantity * unit_price
+        subtotal = quantity * product.unit_price
         tax_amount = subtotal * (product.tax_rate / 100)
-        
+
         line_item = LineItem(
             invoice_id=invoice.id,
             product_id=product.id,
             quantity=quantity,
-            unit_price=unit_price,
+            unit_price=product.unit_price,
             subtotal=subtotal,
             tax_rate=product.tax_rate
         )
         db.session.add(line_item)
-        
-        # Update invoice totals
+
         invoice.subtotal = subtotal
         invoice.tax_amount = tax_amount
         invoice.total = subtotal + tax_amount
-        
-        db.session.commit()
-        
-        print(f"✅ Invoice created: {invoice.invoice_number}")
-        print(f"   Subtotal: {invoice.subtotal}")
-        print(f"   Tax: {invoice.tax_amount}")
-        print(f"   Total: {invoice.total}")
-        
-        return invoice
 
-if __name__ == '__main__':
-    print("=" * 50)
-    print("TESTING DATABASE MODELS")
-    print("=" * 50)
-    
-    test_create_user()
-    print()
-    test_create_invoice()
-    print()
-    print("✅ All tests completed!")
+        db.session.commit()
+
+        assert invoice.id is not None
+        assert invoice.invoice_number == 'INV-2026-0001'
+        assert invoice.total == Decimal('2300.00')
+        assert len(invoice.line_items) == 1
