@@ -28,3 +28,6 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Flask instance folder (contains database and secrets)
+instance/
