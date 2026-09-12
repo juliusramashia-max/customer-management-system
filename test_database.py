@@ -187,3 +187,5 @@ def test_payment_model(client):
         assert payment.amount == Decimal('1000.00')
         assert payment.payment_method == 'Bank Transfer'
         assert payment.invoice_id == invoice.id
+
+        

@@ -1,5 +1,9 @@
 from datetime import datetime, timedelta
 from database import db
+from datetime import datetime, timedelta
+from werkzeug.security import generate_password_hash, check_password_hash
+from database import db
+
 
 class User(db.Model):
     """User account model."""
@@ -7,13 +11,30 @@ class User(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(100), unique=True, nullable=False)
-    password_hash = db.Column(db.String(200), nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Relationships
     customers = db.relationship('Customer', backref='user', lazy=True)
     products = db.relationship('Product', backref='user', lazy=True)
     invoices = db.relationship('Invoice', backref='user', lazy=True)
+
+    def set_password(self, plaintext):
+        """Hash and store the password. Never store plaintext."""
+        self.password_hash = generate_password_hash(plaintext)
+
+    def check_password(self, plaintext):
+        """Return True if plaintext matches the stored hash."""
+        return check_password_hash(self.password_hash, plaintext)
+
+    def to_dict(self):
+        """Safe serialisation — NEVER include password_hash."""
+        return {
+            'id': self.id,
+            'email': self.email,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
 
 class Customer(db.Model):
     """Customer model."""

@@ -2,12 +2,16 @@
 from flask import Flask, jsonify
 from config import Config
 from database import init_db  # ← This should be imported
+from auth import auth_bp
 
 app = Flask(__name__)
 app.config.from_object(Config)
 
 # Initialize database
 init_db(app)  # ← This should be called
+
+# Register blueprints
+app.register_blueprint(auth_bp)
 
 @app.route('/health', methods=['GET'])
 def health_check():
