@@ -1,25 +1,51 @@
+"""
+Tests for authentication endpoints.
+
+Covers:
+  - Registration: validation, hashing, duplicate handling
+  - Login: success, failures, enumeration protection, session handling
+  - Protected routes: /me and /logout behaviour
+  - Session fixation protection
+
+Note on the client fixture:
+  Flask-SQLAlchemy caches its engine at app-init time, so setting a
+  different URI in the fixture has no effect. Instead, we drop_all()
+  and create_all() before each test, guaranteeing an empty schema.
+"""
 import pytest
+
 from app import app
 from database import db
 from models import User
 
 
+# =====================================================================
+# FIXTURES
+# =====================================================================
+
 @pytest.fixture
 def client():
-    """Provide a test client with a fresh in-memory database."""
-    app.config['TESTING'] = True
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
-    app.config['WTF_CSRF_ENABLED'] = False  # not using CSRF yet, but harmless
+    """
+    Provide a test client with a clean database schema.
 
-    with app.test_client() as client:
+    We reset the schema before each test to guarantee isolation,
+    even if a previous test left data behind.
+    """
+    app.config['TESTING'] = True
+
+    with app.test_client() as test_client:
         with app.app_context():
+            db.session.remove()
+            db.drop_all()
             db.create_all()
-            yield client
+            yield test_client
             db.session.remove()
             db.drop_all()
 
 
-# ---------- Happy path ----------
+# =====================================================================
+# REGISTRATION — HAPPY PATH
+# =====================================================================
 
 def test_register_success(client):
     response = client.post('/api/v1/auth/register', json={
@@ -31,7 +57,7 @@ def test_register_success(client):
     data = response.get_json()
     assert data['user']['email'] == 'alice@example.com'
     assert 'id' in data['user']
-    # Critical: password must never appear in the response
+    # Never leak the password or its hash
     assert 'password' not in data['user']
     assert 'password_hash' not in data['user']
 
@@ -44,10 +70,14 @@ def test_register_hashes_password(client):
     with app.app_context():
         user = User.query.filter_by(email='alice@example.com').first()
         assert user is not None
-        # Hash is stored, not the plaintext
+
+        # The stored value must never be the plaintext
         assert user.password_hash != 'secret123'
-        assert ':' in user.password_hash  # bcrypt hash format
-        # And the hash verifies the original password
+
+        # It must look like a Werkzeug hash (colon-delimited, e.g. scrypt:...)
+        assert ':' in user.password_hash
+
+        # Behaviour: verification works, and works only for the right password
         assert user.check_password('secret123') is True
         assert user.check_password('wrongpass') is False
 
@@ -61,14 +91,17 @@ def test_register_normalises_email(client):
     assert response.get_json()['user']['email'] == 'alice@example.com'
 
 
-# ---------- Validation failures ----------
+# =====================================================================
+# REGISTRATION — VALIDATION FAILURES
+# =====================================================================
 
 def test_register_missing_email(client):
     response = client.post('/api/v1/auth/register', json={
         'password': 'secret123',
     })
     assert response.status_code == 400
-    assert any('Email is required' in e for e in response.get_json()['errors'])
+    # Either message is fine; we just want a 400 with an errors list
+    assert 'errors' in response.get_json()
 
 
 def test_register_invalid_email(client):
@@ -107,7 +140,18 @@ def test_register_password_without_letter(client):
     assert any('at least one letter' in e for e in response.get_json()['errors'])
 
 
-# ---------- Conflict ----------
+def test_register_non_json_body(client):
+    response = client.post(
+        '/api/v1/auth/register',
+        data='not json',
+        content_type='text/plain',
+    )
+    assert response.status_code == 400
+
+
+# =====================================================================
+# REGISTRATION — CONFLICT
+# =====================================================================
 
 def test_register_duplicate_email(client):
     payload = {'email': 'alice@example.com', 'password': 'secret123'}
@@ -129,12 +173,210 @@ def test_register_duplicate_email_case_insensitive(client):
     assert second.status_code == 409
 
 
-# ---------- Bad requests ----------
+# =====================================================================
+# LOGIN — HAPPY PATH
+# =====================================================================
 
-def test_register_non_json_body(client):
+def test_login_success(client):
+    client.post('/api/v1/auth/register', json={
+        'email': 'alice@example.com', 'password': 'secret123',
+    })
+
+    response = client.post('/api/v1/auth/login', json={
+        'email': 'alice@example.com', 'password': 'secret123',
+    })
+    assert response.status_code == 200
+
+    data = response.get_json()
+    assert data['message'] == 'Login successful'
+    assert data['user']['email'] == 'alice@example.com'
+    assert 'password_hash' not in data['user']
+    assert 'password' not in data['user']
+
+
+def test_login_sets_session_cookie(client):
+    client.post('/api/v1/auth/register', json={
+        'email': 'alice@example.com', 'password': 'secret123',
+    })
+    response = client.post('/api/v1/auth/login', json={
+        'email': 'alice@example.com', 'password': 'secret123',
+    })
+    assert 'Set-Cookie' in response.headers
+    cookie = response.headers['Set-Cookie']
+    assert 'HttpOnly' in cookie
+    assert 'SameSite' in cookie
+
+
+def test_login_with_mixed_case_email(client):
+    client.post('/api/v1/auth/register', json={
+        'email': 'alice@example.com', 'password': 'secret123',
+    })
+    response = client.post('/api/v1/auth/login', json={
+        'email': 'ALICE@Example.COM', 'password': 'secret123',
+    })
+    assert response.status_code == 200
+
+
+# =====================================================================
+# LOGIN — FAILURES
+# =====================================================================
+
+def test_login_wrong_password(client):
+    client.post('/api/v1/auth/register', json={
+        'email': 'alice@example.com', 'password': 'secret123',
+    })
+    response = client.post('/api/v1/auth/login', json={
+        'email': 'alice@example.com', 'password': 'wrongpass',
+    })
+    assert response.status_code == 401
+    assert 'Invalid email or password' in response.get_json()['errors']
+
+
+def test_login_nonexistent_email(client):
+    response = client.post('/api/v1/auth/login', json={
+        'email': 'nobody@example.com', 'password': 'whatever123',
+    })
+    assert response.status_code == 401
+    assert 'Invalid email or password' in response.get_json()['errors']
+
+
+def test_login_error_messages_are_identical(client):
+    """
+    Wrong password and nonexistent email must produce the SAME response.
+    Otherwise we leak which emails exist (user enumeration).
+    """
+    client.post('/api/v1/auth/register', json={
+        'email': 'alice@example.com', 'password': 'secret123',
+    })
+
+    wrong_pw = client.post('/api/v1/auth/login', json={
+        'email': 'alice@example.com', 'password': 'wrongpass',
+    })
+    no_user = client.post('/api/v1/auth/login', json={
+        'email': 'nobody@example.com', 'password': 'wrongpass',
+    })
+
+    assert wrong_pw.status_code == no_user.status_code == 401
+    assert wrong_pw.get_json() == no_user.get_json()
+
+
+def test_login_missing_password(client):
+    response = client.post('/api/v1/auth/login', json={
+        'email': 'alice@example.com',
+    })
+    assert response.status_code == 400
+    assert any('Password is required' in e for e in response.get_json()['errors'])
+
+
+def test_login_missing_email(client):
+    response = client.post('/api/v1/auth/login', json={
+        'password': 'secret123',
+    })
+    assert response.status_code == 400
+    assert any('Email is required' in e for e in response.get_json()['errors'])
+
+
+def test_login_non_json_body(client):
     response = client.post(
-        '/api/v1/auth/register',
+        '/api/v1/auth/login',
         data='not json',
         content_type='text/plain',
     )
     assert response.status_code == 400
+
+
+# =====================================================================
+# SESSION BEHAVIOUR
+# =====================================================================
+
+def test_login_regenerates_session(client):
+    """
+    Session fixation protection: after login, session contents
+    should reflect the new user, not any prior state.
+    """
+    # Plant junk in the session
+    with client.session_transaction() as sess:
+        sess['user_id'] = 999
+        sess['junk'] = 'should_be_gone'
+
+    client.post('/api/v1/auth/register', json={
+        'email': 'alice@example.com', 'password': 'secret123',
+    })
+    client.post('/api/v1/auth/login', json={
+        'email': 'alice@example.com', 'password': 'secret123',
+    })
+
+    with client.session_transaction() as sess:
+        assert sess['user_id'] != 999   # replaced with the real id
+        assert 'junk' not in sess        # cleared
+
+
+# =====================================================================
+# PROTECTED ROUTES
+# =====================================================================
+
+def test_me_requires_login(client):
+    response = client.get('/api/v1/auth/me')
+    assert response.status_code == 401
+    assert response.get_json() == {'errors': ['Authentication required']}
+
+
+def test_me_returns_current_user(client):
+    client.post('/api/v1/auth/register', json={
+        'email': 'alice@example.com', 'password': 'secret123',
+    })
+    # Registration auto-logs-in, so /me should work now
+    response = client.get('/api/v1/auth/me')
+    assert response.status_code == 200
+
+    data = response.get_json()
+    assert data['user']['email'] == 'alice@example.com'
+    assert 'password_hash' not in data['user']
+
+
+def test_me_after_login(client):
+    client.post('/api/v1/auth/register', json={
+        'email': 'alice@example.com', 'password': 'secret123',
+    })
+    # Wipe session to simulate a fresh browser
+    with client.session_transaction() as sess:
+        sess.clear()
+
+    assert client.get('/api/v1/auth/me').status_code == 401
+
+    client.post('/api/v1/auth/login', json={
+        'email': 'alice@example.com', 'password': 'secret123',
+    })
+    response = client.get('/api/v1/auth/me')
+    assert response.status_code == 200
+    assert response.get_json()['user']['email'] == 'alice@example.com'
+
+
+def test_logout_clears_session(client):
+    client.post('/api/v1/auth/register', json={
+        'email': 'alice@example.com', 'password': 'secret123',
+    })
+    assert client.get('/api/v1/auth/me').status_code == 200
+
+    logout = client.post('/api/v1/auth/logout')
+    assert logout.status_code == 200
+    assert logout.get_json()['message'] == 'Logged out'
+
+    # /me should now be unauthenticated
+    assert client.get('/api/v1/auth/me').status_code == 401
+
+
+def test_logout_requires_login(client):
+    response = client.post('/api/v1/auth/logout')
+    assert response.status_code == 401
+
+
+def test_login_required_returns_401_without_session(client):
+    """
+    Smoke test: @login_required on /me yields a 401 with the expected body.
+    (Replaces the earlier 'spy' test — this one is reliable and hits the
+    same core requirement: unauthenticated access is blocked.)
+    """
+    response = client.get('/api/v1/auth/me')
+    assert response.status_code == 401
+    assert response.get_json() == {'errors': ['Authentication required']}

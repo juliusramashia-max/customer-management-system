@@ -5,6 +5,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from database import db
 from models import User
 from validators import validate_registration_data, validate_login_data
+from decorators import login_required, current_user
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api/v1/auth')
 
@@ -107,3 +108,40 @@ def login():
         'message': 'Login successful',
         'user': user.to_dict(),
     }), 200
+
+# =====================================================================
+# CURRENT USER  (protected)
+# =====================================================================
+@auth_bp.route('/me', methods=['GET'])
+@login_required
+def me():
+    """
+    Return the currently authenticated user.
+
+    This is the canonical way for a client to check "am I logged in?"
+    and "who am I?".
+    """
+    user = current_user()
+    if user is None:
+        # Session references a user that no longer exists.
+        # Clear the stale session and treat it as unauthenticated.
+        session.clear()
+        return jsonify({'errors': ['Authentication required']}), 401
+
+    return jsonify({'user': user.to_dict()}), 200
+
+
+# =====================================================================
+# LOGOUT  (protected)
+# =====================================================================
+@auth_bp.route('/logout', methods=['POST'])
+@login_required
+def logout():
+    """
+    End the current session.
+
+    Requires an active session — calling logout while logged out
+    returns 401, since there is nothing to log out of.
+    """
+    session.clear()
+    return jsonify({'message': 'Logged out'}), 200
