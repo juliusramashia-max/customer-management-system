@@ -18,7 +18,7 @@ def validate_registration_data(data):
     if not isinstance(data, dict):
         return {}, ['Request body must be JSON object']
 
-    email = (data.get('email') or '').strip()
+    email = (data.get('email') or '').strip().lower()
     password = data.get('password') or ''
 
     # --- Email ---
@@ -41,5 +41,27 @@ def validate_registration_data(data):
         errors.append('Password must contain at least one number')
     elif not any(c.isalpha() for c in password):
         errors.append('Password must contain at least one letter')
+
+    return {'email': email, 'password': password}, errors
+
+def validate_login_data(data):
+    """
+    Minimal validation for login. We only check that email and password
+    are present. We do NOT enforce format/policy here on purpose:
+      - Login is not the place to teach the user about password rules.
+      - Stricter checks risk leaking information.
+    """
+    errors = []
+
+    if not isinstance(data, dict):
+        return {}, ['Request body must be a JSON object']
+
+    email = (data.get('email') or '').strip().lower()
+    password = data.get('password') or ''
+
+    if not email:
+        errors.append('Email is required')
+    if not password:
+        errors.append('Password is required')
 
     return {'email': email, 'password': password}, errors
