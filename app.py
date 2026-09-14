@@ -2,16 +2,17 @@ from flask import Flask, jsonify
 from config import Config
 from database import init_db
 from auth import auth_bp
-from customers import customers_bp   # NEW
+from customers import customers_bp
+from products import products_bp   
 
 app = Flask(__name__)
 app.config.from_object(Config)
 
 init_db(app)
 
-# Register blueprints
 app.register_blueprint(auth_bp)
-app.register_blueprint(customers_bp)   # NEW
+app.register_blueprint(customers_bp)
+app.register_blueprint(products_bp)   
 
 
 @app.route('/health', methods=['GET'])
