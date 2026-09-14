@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from decimal import Decimal
 from werkzeug.security import generate_password_hash, check_password_hash
 from database import db
 
@@ -138,6 +139,20 @@ class Invoice(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
 
+    def recalculate_totals(self):
+        """Recalculate subtotal, tax_amount, and total based on line items."""
+        from money import money
+
+        subtotal = Decimal('0.00')
+        tax_amount = Decimal('0.00')
+
+        for item in self.line_items:
+            subtotal += item.compute_subtotal()
+            tax_amount += item.compute_tax()
+
+        self.subtotal = money(subtotal)
+        self.tax_amount = money(tax_amount)
+        self.total = money(self.subtotal - self.discount + self.tax_amount)
 
 class LineItem(db.Model):
     """Invoice line item model."""
@@ -150,6 +165,17 @@ class LineItem(db.Model):
     unit_price = db.Column(db.Numeric(10, 2), nullable=False)
     subtotal = db.Column(db.Numeric(10, 2), nullable=False)
     tax_rate = db.Column(db.Numeric(5, 2), nullable=False)
+
+    def compute_subtotal(self):
+        """Line subtotal = quantity * unit_price, rounded as money."""
+        from money import money
+        return money(self.unit_price * self.quantity)
+
+    def compute_tax(self):
+        """Line tax = line subtotal * (tax_rate / 100), rounded as money."""
+        from money import money
+        subtotal = self.compute_subtotal()
+        return money(subtotal * self.tax_rate / Decimal('100'))
 
     def to_dict(self):
         """Serialise line item for JSON. Decimals become strings."""
