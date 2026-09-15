@@ -64,8 +64,22 @@ class Customer(db.Model):
             'phone': self.phone,
             'address': self.address,
             'company': self.company,
+            'credit_balance': str(self.credit_balance()),
+            'credit_balance_display': self.credit_balance_display(),
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+
+    def credit_balance(self):
+        """Sum of all credit notes for this customer (>= 0)."""
+        from money import money
+        total = Decimal('0.00')
+        for cn in self.credit_notes:
+            total += cn.amount
+        return money(total)
+
+    def credit_balance_display(self):
+        """Human-readable label for UI use."""
+        return f"Due to you: {self.credit_balance()}"
 
 
 class Product(db.Model):
@@ -123,7 +137,13 @@ class Invoice(db.Model):
     )
 
     def to_dict(self):
-        """Serialise invoice for JSON. Decimals become strings."""
+        from datetime import datetime
+        is_overdue = (
+            self.due_date is not None
+            and self.due_date < datetime.utcnow()
+            and self.outstanding_balance() > Decimal('0.00')
+            and self.status not in ('PAID', 'DRAFT')
+        )
         return {
             'id': self.id,
             'customer_id': self.customer_id,
@@ -134,6 +154,9 @@ class Invoice(db.Model):
             'discount': str(self.discount),
             'tax_amount': str(self.tax_amount),
             'total': str(self.total),
+            'total_paid': str(self.total_paid()),
+            'outstanding_balance': str(self.outstanding_balance()),
+            'is_overdue': is_overdue,
             'status': self.status,
             'notes': self.notes,
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -153,6 +176,42 @@ class Invoice(db.Model):
         self.subtotal = money(subtotal)
         self.tax_amount = money(tax_amount)
         self.total = money(self.subtotal - self.discount + self.tax_amount)
+
+    def total_paid(self):
+        """Sum of all payments against this invoice, as Decimal."""
+        from money import money
+        total = Decimal('0.00')
+        for p in self.payments:
+            total += p.amount
+        return money(total)
+
+    def outstanding_balance(self):
+        """Amount still owed. Clamped to >= 0 (overpayment generates a credit note)."""
+        from money import money
+        balance = self.total - self.total_paid()
+        if balance < Decimal('0.00'):
+            return Decimal('0.00')
+        return money(balance)
+
+    def recalculate_status(self):
+        """
+        Update stored status from payment totals.
+
+        DRAFT stays DRAFT. Otherwise:
+          paid <= 0             → SENT
+          0 < paid < total      → PARTIALLY_PAID
+          paid >= total         → PAID
+        """
+        if self.status == 'DRAFT':
+            return
+        paid = self.total_paid()
+        outstanding = self.outstanding_balance()
+        if paid <= Decimal('0.00'):
+            self.status = 'SENT'
+        elif outstanding <= Decimal('0.00'):
+            self.status = 'PAID'
+        else:
+            self.status = 'PARTIALLY_PAID'
 
 class LineItem(db.Model):
     """Invoice line item model."""
@@ -213,3 +272,36 @@ class Payment(db.Model):
             'reference': self.reference,
             'notes': self.notes,
         }
+
+class CreditNote(db.Model):
+    """
+    A credit issued to a customer, typically from an overpayment.
+
+    Credit notes are immutable. The customer's credit balance is the
+    sum of their credit notes' amounts.
+    """
+    __tablename__ = 'credit_notes'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    customer_id = db.Column(db.Integer, db.ForeignKey('customers.id'), nullable=False)
+    invoice_id = db.Column(db.Integer, db.ForeignKey('invoices.id'), nullable=True)
+    amount = db.Column(db.Numeric(10, 2), nullable=False)
+    reason = db.Column(db.String(200), nullable=False)
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    customer = db.relationship('Customer', backref='credit_notes')
+    invoice = db.relationship('Invoice', backref='credit_notes')
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'customer_id': self.customer_id,
+            'invoice_id': self.invoice_id,
+            'amount': str(self.amount),
+            'reason': self.reason,
+            'notes': self.notes,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+    

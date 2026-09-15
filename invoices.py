@@ -2,7 +2,7 @@
 Invoice CRUD endpoints.
 
 Invoices are created with line items in a single POST. Line items are
-nested resources: adding/updating/removing them via /invoices/<id>/line-items
+nested resources: adding/updating/removing them via the invoice update
 recalculates the parent's subtotal, tax, and total.
 
 All routes are scoped to the current user. IDOR is prevented at three
@@ -31,13 +31,16 @@ def _get_owned_invoice(invoice_id):
 
 def _build_line_items(invoice, validated_items):
     """
-    Given a parent invoice and a list of {'product', 'quantity'},
-    build LineItem instances (not yet committed) with price and tax
-    copied from the product at this moment in time.
+    Build LineItem instances (not yet committed) with price and tax
+    snapshot from the product at this moment in time.
+
+    Note: setting invoice= on the LineItem automatically appends it to
+    invoice.line_items via the relationship's backref. Do NOT also call
+    invoice.line_items.append(...) — that would double the item.
     """
     for entry in validated_items:
         product = entry['product']
-        item = LineItem(
+        LineItem(
             invoice=invoice,
             product_id=product.id,
             quantity=entry['quantity'],
@@ -45,6 +48,15 @@ def _build_line_items(invoice, validated_items):
             tax_rate=product.tax_rate,       # snapshot
             subtotal=Decimal('0.00'),        # filled by recalculate
         )
+
+
+def _serialize_invoice(invoice):
+    """Return a dict with the invoice plus its nested collections."""
+    payload = invoice.to_dict()
+    payload['line_items'] = [item.to_dict() for item in invoice.line_items]
+    payload['payments'] = [p.to_dict() for p in invoice.payments]
+    payload['credit_notes'] = [cn.to_dict() for cn in invoice.credit_notes]
+    return payload
 
 
 # =====================================================================
@@ -57,10 +69,10 @@ def list_invoices():
     List the current user's invoices.
 
     Query params:
-      page      (int, default 1)
-      per_page  (int, default 20, max 100)
-      q         (str) — substring search on invoice_number / notes
-      status    (str) — filter by status (DRAFT, SENT, PAID, ...)
+      page        (int, default 1)
+      per_page    (int, default 20, max 100)
+      q           (str) — substring search on invoice_number / notes
+      status      (str) — filter by status (DRAFT, SENT, PAID, ...)
       customer_id (int) — filter to a specific customer
     """
     try:
@@ -116,7 +128,7 @@ def list_invoices():
 
 
 # =====================================================================
-# CREATE (with nested line items)
+# CREATE
 # =====================================================================
 @invoices_bp.route('', methods=['POST'])
 @login_required
@@ -151,7 +163,6 @@ def create_invoice():
     try:
         db.session.commit()
     except IntegrityError:
-        # Usually a duplicate invoice_number for this user
         db.session.rollback()
         return jsonify({
             'errors': ['An invoice with this number already exists']
@@ -161,7 +172,7 @@ def create_invoice():
 
 
 # =====================================================================
-# READ ONE (with line items)
+# READ ONE
 # =====================================================================
 @invoices_bp.route('/<int:invoice_id>', methods=['GET'])
 @login_required
@@ -169,14 +180,11 @@ def get_invoice(invoice_id):
     invoice = _get_owned_invoice(invoice_id)
     if invoice is None:
         return jsonify({'errors': ['Invoice not found']}), 404
-
-    payload = invoice.to_dict()
-    payload['line_items'] = [item.to_dict() for item in invoice.line_items]
-    return jsonify({'invoice': payload}), 200
+    return jsonify({'invoice': _serialize_invoice(invoice)}), 200
 
 
 # =====================================================================
-# UPDATE  (metadata only — line items are managed via nested routes)
+# UPDATE  (metadata + line items; DRAFT only)
 # =====================================================================
 @invoices_bp.route('/<int:invoice_id>', methods=['PUT'])
 @login_required
@@ -199,7 +207,6 @@ def update_invoice(invoice_id):
     if errors:
         return jsonify({'errors': errors}), 400
 
-    # Update metadata
     invoice.customer_id = cleaned['customer'].id
     invoice.invoice_number = cleaned['invoice_number']
     invoice.issue_date = cleaned['issue_date']
@@ -207,7 +214,7 @@ def update_invoice(invoice_id):
     invoice.discount = cleaned.get('discount', Decimal('0.00'))
     invoice.notes = cleaned.get('notes')
 
-    # Replace line items wholesale (simplest correct semantics)
+    # Replace line items wholesale
     invoice.line_items.clear()
     _build_line_items(invoice, cleaned['line_items'])
     invoice.recalculate_totals()
@@ -220,13 +227,11 @@ def update_invoice(invoice_id):
             'errors': ['An invoice with this number already exists']
         }), 409
 
-    payload = invoice.to_dict()
-    payload['line_items'] = [item.to_dict() for item in invoice.line_items]
-    return jsonify({'invoice': payload}), 200
+    return jsonify({'invoice': _serialize_invoice(invoice)}), 200
 
 
 # =====================================================================
-# DELETE
+# DELETE  (DRAFT only)
 # =====================================================================
 @invoices_bp.route('/<int:invoice_id>', methods=['DELETE'])
 @login_required
@@ -243,3 +248,23 @@ def delete_invoice(invoice_id):
     db.session.delete(invoice)
     db.session.commit()
     return '', 204
+
+
+# =====================================================================
+# SEND  (DRAFT → SENT)
+# =====================================================================
+@invoices_bp.route('/<int:invoice_id>/send', methods=['POST'])
+@login_required
+def send_invoice(invoice_id):
+    """
+    Transition a DRAFT invoice to SENT so payments can be recorded.
+    """
+    invoice = _get_owned_invoice(invoice_id)
+    if invoice is None:
+        return jsonify({'errors': ['Invoice not found']}), 404
+    if invoice.status != 'DRAFT':
+        return jsonify({'errors': ['Only DRAFT invoices can be sent']}), 409
+
+    invoice.status = 'SENT'
+    db.session.commit()
+    return jsonify({'invoice': invoice.to_dict()}), 200

@@ -3,6 +3,7 @@ from decimal import Decimal, InvalidOperation
 from datetime import datetime, date
 from money import to_decimal
 from decimal import Decimal
+from money import to_decimal, money
 
 
 PASSWORD_MIN_LENGTH = 8
@@ -380,5 +381,83 @@ def validate_invoice_data(data, user_id):
     line_items = _validate_line_items(data.get('line_items'), user_id, errors)
     if line_items:
         cleaned['line_items'] = line_items
+
+    return cleaned, errors
+
+PAYMENT_METHODS = ('CASH', 'BANK_TRANSFER', 'CARD', 'CHEQUE', 'OTHER')
+
+
+def validate_payment_data(data):
+    """
+    Validate a payment payload.
+
+    Returns (cleaned, errors). cleaned contains:
+      - amount: Decimal (> 0, rounded to 2 dp)
+      - payment_method: str (one of PAYMENT_METHODS)
+      - payment_date: datetime (optional; default is now)
+      - reference: str or None
+      - notes: str or None
+
+    Overpayment handling is NOT done here — that requires the target
+    invoice and is enforced in payments.py.
+    """
+    errors = []
+
+    if not isinstance(data, dict):
+        return {}, ['Request body must be a JSON object']
+
+    cleaned = {}
+
+    # --- amount (required, > 0) ---
+    amount_raw = data.get('amount')
+    if amount_raw is None or amount_raw == '':
+        errors.append('Amount is required')
+    else:
+        try:
+            amount = to_decimal(amount_raw)
+        except Exception:
+            errors.append('Amount must be a number')
+            amount = None
+        if amount is not None:
+            if amount <= Decimal('0'):
+                errors.append('Amount must be greater than 0')
+            else:
+                cleaned['amount'] = money(amount)
+
+    # --- payment_date (optional, defaults to now) ---
+    payment_date_raw = data.get('payment_date')
+    if payment_date_raw:
+        from datetime import datetime
+        try:
+            cleaned['payment_date'] = datetime.fromisoformat(
+                str(payment_date_raw).strip()
+            )
+        except (ValueError, TypeError):
+            errors.append('Payment date must be a valid date (YYYY-MM-DD)')
+
+    # --- payment_method (required, must be in enum) ---
+    method = (data.get('payment_method') or '').strip().upper()
+    if not method:
+        errors.append('Payment method is required')
+    elif method not in PAYMENT_METHODS:
+        errors.append(
+            f"Payment method must be one of: {', '.join(PAYMENT_METHODS)}"
+        )
+    else:
+        cleaned['payment_method'] = method
+
+    # --- reference (optional) ---
+    reference = data.get('reference')
+    if reference is not None:
+        reference = str(reference).strip()
+        if len(reference) > 100:
+            errors.append('Reference must be 100 characters or fewer')
+        else:
+            cleaned['reference'] = reference or None
+
+    # --- notes (optional) ---
+    notes = data.get('notes')
+    if notes is not None:
+        cleaned['notes'] = str(notes).strip() or None
 
     return cleaned, errors
