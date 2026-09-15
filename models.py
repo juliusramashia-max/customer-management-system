@@ -78,8 +78,9 @@ class Customer(db.Model):
         return money(total)
 
     def credit_balance_display(self):
-        """Human-readable label for UI use."""
-        return f"Due to you: {self.credit_balance()}"
+        """Return a human-readable credit-balance label for the UI."""
+        balance = self.credit_balance()
+        return f"Due to you: {balance}"
 
 
 class Product(db.Model):
@@ -192,6 +193,23 @@ class Invoice(db.Model):
         if balance < Decimal('0.00'):
             return Decimal('0.00')
         return money(balance)
+
+    def is_overdue(self, now=None):
+        """
+        True if this invoice is past its due date and still owes money.
+
+        Derived, not stored — the value changes with time, so we compute
+        it fresh each time. A DRAFT invoice can't be overdue (not issued).
+        A PAID invoice can't be overdue (nothing owed).
+        """
+        from datetime import datetime
+        if now is None:
+            now = datetime.utcnow()
+        if self.due_date is None:
+            return False
+        if self.status in ('DRAFT', 'PAID', 'ARCHIVED'):
+            return False
+        return self.due_date < now and self.outstanding_balance() > Decimal('0.00')
 
     def recalculate_status(self):
         """
