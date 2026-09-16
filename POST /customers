@@ -1,0 +1,20 @@
+Create a customer.
+
+Request body:
+
+json
+{
+  "name": "Acme Corp",
+  "email": "billing@acme.com",
+  "phone": "+1 555-0101",
+  "company": "Acme Corporation",
+  "address": "123 Main St"
+}
+
+Responses:
+
+201 Created — { "customer": {...} }
+
+400 — validation error
+
+409 — email already used for this user
