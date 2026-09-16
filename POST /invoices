@@ -1,0 +1,46 @@
+Create an invoice with line items in one transaction.
+
+Request body:
+
+json
+{
+  "customer_id": 3,
+  "invoice_number": "INV-2026-0001",
+  "issue_date": "2026-09-14",
+  "due_date": "2026-10-14",
+  "discount": "0.00",
+  "notes": "September services",
+  "line_items": [
+    { "product_id": 1, "quantity": 2 },
+    { "product_id": 4, "quantity": 1 }
+  ]
+}
+Rules enforced:
+
+due_date must be on or after issue_date
+
+At least one line item
+
+Every line item references a product owned by the user
+
+Quantity > 0
+
+invoice_number unique per user
+
+Response 201:
+
+json
+{
+  "invoice": {
+    "id": 7,
+    "invoice_number": "INV-2026-0001",
+    "subtotal": "620.00",
+    "tax_amount": "81.00",
+    "total": "701.00",
+    "total_paid": "0.00",
+    "outstanding_balance": "701.00",
+    "is_overdue": false,
+    "status": "DRAFT",
+    "...": "..."
+  }
+}
