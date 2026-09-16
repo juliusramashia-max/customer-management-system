@@ -1,1 +1,15 @@
+Authenticate and start a session.
+
+Request body:
+
+json
 { "email": "alice@example.com", "password": "secret123" }
+
+Responses:
+
+200 OK — session cookie set; { "message": "...", "user": {...} }
+
+400 — missing field
+
+401 — invalid credentials (same message for wrong password and
+unknown email — see DECISIONS.md)
