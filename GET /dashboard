@@ -1,0 +1,18 @@
+One-page business summary.
+
+Response:
+
+json
+{
+  "counts": { "customers": 10, "products": 5, "invoices": 42 },
+  "totals": {
+    "invoiced": "12500.00",
+    "paid": "9000.00",
+    "outstanding": "3500.00",
+    "credits_issued": "150.00"
+  },
+  "invoices_by_status": { "DRAFT": 3, "SENT": 5, "PAID": 30, "PARTIALLY_PAID": 4 },
+  "overdue": { "count": 2, "total_outstanding": "800.00" },
+  "recent_invoices": [ "...up to 5..." ],
+  "recent_payments": [ "...up to 5..." ]
+}
