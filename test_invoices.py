@@ -355,3 +355,82 @@ def test_delete_invoice(alice):
     r = alice.delete(f'/api/v1/invoices/{inv["id"]}')
     assert r.status_code == 204
     assert alice.get(f'/api/v1/invoices/{inv["id"]}').status_code == 404
+
+# =====================================================================
+# PDF DOWNLOAD
+# =====================================================================
+
+def test_pdf_requires_login(client):
+    assert client.get('/api/v1/invoices/1/pdf').status_code == 401
+
+
+def test_pdf_returns_valid_pdf_for_owner(alice):
+    """
+    The owner of an invoice can download its PDF. We verify:
+      - HTTP 200
+      - Content-Type is application/pdf
+      - The bytes start with %PDF- (the PDF magic number)
+      - Content-Length > 0 (a real document was produced)
+      - Content-Disposition names the right file
+    """
+    cust_id, prod_id, _ = _setup_customer_and_products(alice)
+    inv = alice.post('/api/v1/invoices', json=_invoice_payload(cust_id, [(prod_id, 1)])).get_json()['invoice']
+
+    r = alice.get(f'/api/v1/invoices/{inv["id"]}/pdf')
+    assert r.status_code == 200
+    assert r.mimetype == 'application/pdf'
+    assert r.data.startswith(b'%PDF-')
+    assert len(r.data) > 500            # a real PDF is at least a few hundred bytes
+    assert 'Content-Disposition' in r.headers
+    assert inv['invoice_number'] in r.headers['Content-Disposition']
+    assert 'attachment' in r.headers['Content-Disposition']
+
+
+def test_pdf_for_nonexistent_invoice(alice):
+    r = alice.get('/api/v1/invoices/99999/pdf')
+    assert r.status_code == 404
+
+
+def test_pdf_isolation(alice, bob):
+    """Bob cannot download Alice's invoice PDF — same IDOR rule as the JSON endpoints."""
+    cust_id, prod_id, _ = _setup_customer_and_products(alice)
+    inv = alice.post('/api/v1/invoices', json=_invoice_payload(cust_id, [(prod_id, 1)])).get_json()['invoice']
+
+    r = bob.get(f'/api/v1/invoices/{inv["id"]}/pdf')
+    assert r.status_code == 404
+
+
+def test_pdf_for_paid_invoice(alice):
+    """A PDF can be generated regardless of status — for any owned invoice."""
+    cust_id, prod_id, _ = _setup_customer_and_products(alice)
+    inv = alice.post('/api/v1/invoices', json=_invoice_payload(cust_id, [(prod_id, 2)])).get_json()['invoice']
+    alice.post(f'/api/v1/invoices/{inv["id"]}/send')
+    alice.post(f'/api/v1/invoices/{inv["id"]}/payments', json={
+        'amount': '500.00', 'payment_method': 'CASH',
+    })
+
+    r = alice.get(f'/api/v1/invoices/{inv["id"]}/pdf')
+    assert r.status_code == 200
+    assert r.data.startswith(b'%PDF-')
+
+
+def test_pdf_with_multiple_line_items(alice):
+    """
+    Long invoices still render. We just check it doesn't crash and
+    produces a valid PDF.
+    """
+    cust_id, prod_id, _ = _setup_customer_and_products(alice)
+
+    # Build an invoice with many line items by repeating the same product
+    many_items = [{'product_id': prod_id, 'quantity': 1} for _ in range(20)]
+    inv = alice.post('/api/v1/invoices', json={
+        'customer_id': cust_id,
+        'invoice_number': 'INV-MANY',
+        'issue_date': '2026-09-01',
+        'due_date': '2026-09-30',
+        'line_items': many_items,
+    }).get_json()['invoice']
+
+    r = alice.get(f'/api/v1/invoices/{inv["id"]}/pdf')
+    assert r.status_code == 200
+    assert r.data.startswith(b'%PDF-')

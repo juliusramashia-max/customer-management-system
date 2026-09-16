@@ -18,6 +18,9 @@ from validators import validate_invoice_data
 from decorators import login_required, current_user
 from money import to_decimal, money
 
+from flask import Response
+from pdf import render_invoice_pdf
+
 invoices_bp = Blueprint('invoices', __name__, url_prefix='/api/v1/invoices')
 
 
@@ -267,3 +270,30 @@ def send_invoice(invoice_id):
     invoice.status = 'SENT'
     db.session.commit()
     return jsonify({'invoice': invoice.to_dict()}), 200
+
+# =====================================================================
+# PDF DOWNLOAD
+# =====================================================================
+@invoices_bp.route('/<int:invoice_id>/pdf', methods=['GET'])
+@login_required
+def download_invoice_pdf(invoice_id):
+    """
+    Return the invoice as a PDF file.
+
+    Ownership is enforced by _get_owned_invoice — a user can only
+    download their own invoices.
+    """
+    invoice = _get_owned_invoice(invoice_id)
+    if invoice is None:
+        return jsonify({'errors': ['Invoice not found']}), 404
+
+    pdf_bytes = render_invoice_pdf(invoice, current_user())
+    filename = f"{invoice.invoice_number}.pdf"
+
+    return Response(
+        pdf_bytes,
+        mimetype='application/pdf',
+        headers={
+            'Content-Disposition': f'attachment; filename="{filename}"',
+        },
+    )
