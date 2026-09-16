@@ -1,1 +1,14 @@
+Create a new user.
+
+Request body:
+
+json
 { "email": "alice@example.com", "password": "secret123" }
+
+Responses:
+
+201 Created — { "message": "...", "user": {...} }
+
+400 Bad Request — validation failure
+
+409 Conflict — email already registered
