@@ -1,0 +1,18 @@
+List payments for an invoice, plus balance summary and the customer's
+credit balance.
+
+Response:
+
+json
+{
+  "items": [ { "id": 1, "amount": "200.00", "...": "..." } ],
+  "total": 2,
+  "outstanding_balance": "200.00",
+  "total_paid": "300.00",
+  "customer": {
+    "id": 3,
+    "name": "Acme Corp",
+    "credit_balance": "0.00",
+    "credit_balance_display": "Due to you: 0.00"
+  }
+}
